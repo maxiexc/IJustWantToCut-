@@ -1,0 +1,24 @@
+# Python 快取與虛擬環境
+__pycache__/
+*.pyc
+venv/
+env/
+
+# IDE 設定檔 (PyCharm)
+.idea/
+
+# 外部二進位執行檔 (FFmpeg 等)
+*.exe
+ffmpeg
+ffprobe
+
+# 測試用的多媒體檔案 (避免塞爆 Git)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.gif
+
+# 系統產生的隱藏檔
+.DS_Store
+Thumbs.db

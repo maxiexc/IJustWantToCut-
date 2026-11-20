@@ -2,6 +2,7 @@ import sys
 import os
 import re
 import vlc
+import ctypes
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QFrame, QPushButton, QLabel,
                                QSlider, QCheckBox, QComboBox, QFileDialog,
@@ -37,6 +38,7 @@ class FastCutEditor(QMainWindow):
         self.ffmpeg_process = QProcess(self)
         self.ffmpeg_process.readyReadStandardError.connect(self.read_ffmpeg_progress)
         self.ffmpeg_process.finished.connect(self.export_finished)
+        self.ffmpeg_error_log = ""  # 新增：用於儲存詳細日誌
 
     def init_ui(self):
         central_widget = QWidget()
@@ -96,7 +98,7 @@ class FastCutEditor(QMainWindow):
         self.slider_speed.setRange(1, 50)
         self.slider_speed.setValue(10)
         self.spin_speed = QDoubleSpinBox()
-        self.spin_speed.setRange(0.1, 5.0)
+        self.spin_speed.setRange(0.05, 5.0)
         self.spin_speed.setSingleStep(0.1)
         self.spin_speed.setValue(1.0)
         self.spin_speed.setSuffix(" x")
@@ -120,6 +122,18 @@ class FastCutEditor(QMainWindow):
         layout_mp4.addRow("音軌:", self.chk_remove_audio)
 
         self.combo_res_mp4 = QComboBox()
+        self.combo_res_mp4.setEditable(True)
+        self.combo_res_mp4.addItems(["原始解析度", "1920 (1080p)", "2560 (2K)", "3840 (4K)"])
+        layout_mp4.addRow("目標寬度:", self.combo_res_mp4)
+
+        # 【新增】輸出幀率上限 (可選：不限制 / 60 FPS / 30 FPS)
+        self.combo_fps_mp4 = QComboBox()
+        self.combo_fps_mp4.addItems(["不限制 (原始幀率)", "上限 60 FPS", "上限 30 FPS"])
+        layout_mp4.addRow("幀率上限:", self.combo_fps_mp4)
+
+        # 【新增】8-bit 色彩相容性選項
+        self.chk_force_8bit = QCheckBox("強制輸出 8-bit (yuv420p)")
+        layout_mp4.addRow("色彩相容:", self.chk_force_8bit)
         self.combo_res_mp4.setEditable(True)
         self.combo_res_mp4.addItems(["原始解析度", "1920 (1080p)", "2560 (2K)", "3840 (4K)"])
         layout_mp4.addRow("目標寬度:", self.combo_res_mp4)
@@ -180,7 +194,17 @@ class FastCutEditor(QMainWindow):
         main_layout.addLayout(right_layout, stretch=1)
 
     def init_vlc(self):
-        self.vlc_instance = vlc.Instance("--no-xlib")
+        if sys.platform.startswith('linux'):
+            # 對齊原生 VLC 實測成功路徑：Intel VAAPI 硬解 + OpenGL 渲染
+            self.vlc_instance = vlc.Instance(
+                "--avcodec-hw=vaapi",
+                "--vout=gl"
+            )
+            # 確保 QFrame 建立獨立的原生 X11 視窗句柄供 OpenGL/VAAPI 繪製
+            self.video_frame.setAttribute(Qt.WA_NativeWindow, True)
+        else:
+            self.vlc_instance = vlc.Instance()
+
         self.media_player = self.vlc_instance.media_player_new()
         win_id = int(self.video_frame.winId())
         if sys.platform.startswith('linux'):
@@ -279,9 +303,12 @@ class FastCutEditor(QMainWindow):
         output_file, _ = QFileDialog.getSaveFileName(self, "匯出 MP4", "output.mp4", "MP4 影片檔 (*.mp4)")
         if not output_file: return
 
+        # 【新增防呆】如果使用者勾選了去除音軌，或「原始影片根本沒音軌」，都強制設定為 True
+        actual_remove_audio = self.chk_remove_audio.isChecked() or not self.current_media_info.get('has_audio', True)
+
         cmd_list = self.processor.build_export_command(
             self.input_file, output_file, start_sec, end_sec, speed,
-            self.chk_remove_audio.isChecked(), self.parse_width(self.combo_res_mp4.currentText()),
+            actual_remove_audio, self.parse_width(self.combo_res_mp4.currentText()),
             int(self.current_media_info['bitrate_bps'] / 1000), self.slider_quality.value()
         )
         self.execute_ffmpeg(cmd_list, self.btn_export_mp4)
@@ -300,6 +327,7 @@ class FastCutEditor(QMainWindow):
 
     def execute_ffmpeg(self, cmd_list, button):
         self.progress_bar.setValue(0)
+        self.ffmpeg_error_log = ""  # 每次開始匯出時清空日誌
         self.btn_export_mp4.setEnabled(False)
         self.btn_export_gif.setEnabled(False)
         button.setText("處理中，請稍候...")
@@ -309,6 +337,10 @@ class FastCutEditor(QMainWindow):
 
     def read_ffmpeg_progress(self):
         output = self.ffmpeg_process.readAllStandardError().data().decode("utf-8")
+
+        # 【修改】將文字持續附加到日誌變數中，避免進度條讀取後文字消失
+        self.ffmpeg_error_log += output
+
         match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})", output)
         if match and getattr(self, 'target_duration_sec', 0) > 0:
             h, m, s = match.groups()
@@ -329,11 +361,19 @@ class FastCutEditor(QMainWindow):
             QMessageBox.information(self, "完成", "匯出成功！")
         else:
             self.progress_bar.setValue(0)
-            err_msg = self.ffmpeg_process.readAllStandardError().data().decode("utf-8")
-            QMessageBox.critical(self, "錯誤", f"匯出失敗，錯誤代碼: {exit_code}\n\n{err_msg}")
+            # 【修改】拋出我們剛剛累積存下來的錯誤日誌 (取最後1000字避免過長卡死UI)
+            err_msg = self.ffmpeg_error_log[-1000:] if len(self.ffmpeg_error_log) > 1000 else self.ffmpeg_error_log
+            QMessageBox.critical(self, "錯誤", f"匯出失敗，錯誤代碼: {exit_code}\n\n詳細原因:\n{err_msg}")
 
 
 if __name__ == "__main__":
+    if sys.platform.startswith('linux'):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        try:
+            # 預先初始化 X11 多執行緒安全鎖，才能安心移除 --no-xlib 並啟用硬解/GL
+            ctypes.CDLL("libX11.so.6").XInitThreads()
+        except OSError:
+            pass
     app = QApplication(sys.argv)
     window = FastCutEditor()
     window.show()

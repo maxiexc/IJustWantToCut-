@@ -7,9 +7,9 @@ import shutil  # 新增匯入
 
 class MediaProcessor:
     def __init__(self):
-        # 自動尋找 ffmpeg 與 ffprobe
-        self.ffmpeg_path = self._resolve_executable("ffmpeg")
-        self.ffprobe_path = self._resolve_executable("ffprobe")
+        # 【修改】使用 abspath 轉為絕對路徑，確保 QProcess 能準確呼叫
+        self.ffmpeg_path = os.path.abspath(self._resolve_executable("ffmpeg"))
+        self.ffprobe_path = os.path.abspath(self._resolve_executable("ffprobe"))
 
     def _resolve_executable(self, cmd_name):
         """
@@ -42,98 +42,88 @@ class MediaProcessor:
         if not os.path.exists(self.ffprobe_path):
             raise FileNotFoundError(f"找不到 ffprobe: {self.ffprobe_path}")
 
+        # 【修改】拿掉 -select_streams v:0，掃描整個檔案的串流以偵測音軌
         cmd = [
-            self.ffprobe_path,
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,bit_rate,duration",
-            "-of", "json",
-            file_path
+            self.ffprobe_path, "-v", "error",
+            "-show_entries", "stream=codec_type,width,height,bit_rate,duration",
+            "-of", "json", file_path
         ]
-
         result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"FFprobe 執行失敗: {result.stderr}")
+        if result.returncode != 0: raise RuntimeError(f"FFprobe 錯誤: {result.stderr}")
 
         info = json.loads(result.stdout)
-        stream = info.get("streams", [{}])[0]
+        streams = info.get("streams", [])
 
-        # 整理回傳資料
-        data = {
-            "width": int(stream.get("width", 0)),
-            "height": int(stream.get("height", 0)),
-            "duration_sec": float(stream.get("duration", 0.0)),
-            # 如果 ffprobe 讀不到 bitrate，預設給 60Mbps (60000000)
-            "bitrate_bps": int(stream.get("bit_rate", 60000000))
+        # 【新增】分離影像串流，並偵測是否存在 codec_type == "audio" 的串流
+        video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+
+        bitrate_str = video_stream.get("bit_rate", "N/A")
+        bitrate = 60000000 if bitrate_str == "N/A" else int(bitrate_str)
+
+        return {
+            "width": int(video_stream.get("width", 0)),
+            "height": int(video_stream.get("height", 0)),
+            "duration_sec": float(video_stream.get("duration", 0.0)),
+            "bitrate_bps": bitrate,
+            "has_audio": has_audio  # 【新增】將音軌狀態回傳給前端 UI
         }
-        return data
 
     def build_export_command(self, input_file, output_file, start_sec, end_sec,
                              speed_factor=1.0, remove_audio=False,
                              target_width=None, max_bitrate_kbps=None, crf=28):
-        """動態生成 FFmpeg 輸出指令"""
-
-        cmd = [self.ffmpeg_path, "-y"]
-
-        # 1. 剪輯時間設定 (放在 -i 前面以加速處理)
-        cmd.extend(["-ss", str(start_sec)])
-        cmd.extend(["-to", str(end_sec)])
-        cmd.extend(["-i", input_file])
-
-        # 2. 影像與聲音濾鏡 (Filter Complex)
+        cmd = [self.ffmpeg_path, "-y", "-ss", str(start_sec), "-to", str(end_sec), "-i", input_file]
         video_filters = []
         audio_filters = []
 
-        # 變速處理
+        # 1. 變速處理
         if speed_factor != 1.0:
             video_filters.append(f"setpts={1.0 / speed_factor}*PTS")
             if not remove_audio:
-                audio_filters.append(f"atempo={speed_factor}")
+                s = speed_factor
+                while s < 0.5:
+                    audio_filters.append("atempo=0.5")
+                    s /= 0.5
+                audio_filters.append(f"atempo={s}")
 
-        # 解析度調整 (若有指定寬度，高度設為 -1 維持比例)
+        # 2. 解析度縮放 (高度自動對齊偶數)
         if target_width:
-            video_filters.append(f"scale={target_width}:-1")
+            video_filters.append(f"scale={target_width}:-2")
 
-        # 組合濾鏡字串
+        # 3. 組合濾鏡與串流映射 (鎖定主視訊軌 0:v:0，並修復原速縮放漏音軌問題)
         filter_str = ""
         if video_filters:
-            filter_str += f"[0:v]{','.join(video_filters)}[v];"
+            filter_str += f"[0:v:0]{','.join(video_filters)}[v];"
         if audio_filters:
-            filter_str += f"[0:a]{','.join(audio_filters)}[a];"
+            filter_str += f"[0:a:0]{','.join(audio_filters)}[a];"
 
-        # 3. 映射與編碼設定
         if filter_str:
-            # 移除最後的結尾分號
             filter_str = filter_str.rstrip(";")
             cmd.extend(["-filter_complex", filter_str])
-            cmd.extend(["-map", "[v]"])
-            if not remove_audio and audio_filters:
-                cmd.extend(["-map", "[a]"])
-        else:
-            # 如果完全沒有濾鏡 (原速、原解析度)，直接映射影像
-            cmd.extend(["-map", "0:v"])
+            cmd.extend(["-map", "[v]" if video_filters else "0:v:0"])
             if not remove_audio:
-                cmd.extend(["-map", "0:a"])
+                cmd.extend(["-map", "[a]" if audio_filters else "0:a:0?"])
+        else:
+            cmd.extend(["-map", "0:v:0"])
+            if not remove_audio:
+                cmd.extend(["-map", "0:a:0?"])
 
-        # 音軌設定
+        # 4. 音軌編碼
         if remove_audio:
             cmd.append("-an")
         else:
             cmd.extend(["-c:a", "aac"])
 
-        # 影像編碼設定 (H.265)
+        # 5. 【修復】補回遺失的 H.265 編碼器與 CRF 參數
         cmd.extend([
             "-c:v", "libx265",
             "-crf", str(crf),
             "-tag:v", "hvc1"
         ])
 
-        # 智慧碼率上限設定 (防止檔案過大)
+        # 6. 智慧碼率上限設定 (緩衝區設為 4 倍以因應高動態畫面)
         if max_bitrate_kbps:
-            cmd.extend([
-                "-maxrate", f"{max_bitrate_kbps}k",
-                "-bufsize", f"{max_bitrate_kbps * 2}k"  # 緩衝區通常設為碼率的2倍
-            ])
+            cmd.extend(["-maxrate", f"{max_bitrate_kbps}k", "-bufsize", f"{max_bitrate_kbps * 4}k"])
 
         cmd.append(output_file)
         return cmd
@@ -153,15 +143,13 @@ class MediaProcessor:
 
         # 3. 解析度縮放 (採用 lanczos 演算法保持縮小後的銳利度)
         if target_width:
-            filters.append(f"scale={target_width}:-1:flags=lanczos")
+            # 【修改】GIF 同樣改為 -2 以策安全
+            filters.append(f"scale={target_width}:-2:flags=lanczos")
 
         # 4. 高畫質 GIF 調色盤技術 (split 分流 -> 生成調色盤 -> 應用調色盤)
         filter_str = ",".join(filters)
-        complex_filter = f"[0:v]{filter_str},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
-
-        cmd.extend(["-filter_complex", complex_filter])
-        cmd.append(output_file)
-
+        cmd.extend(
+            ["-filter_complex", f"[0:v]{filter_str},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", output_file])
         return cmd
 
 

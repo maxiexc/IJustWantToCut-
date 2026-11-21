@@ -71,7 +71,8 @@ for target_bin in /opt/ijustwanttocut/IJustWantToCut "$QXCB_PATH"; do
 done
 
 echo "==> Checking FFmpeg libx265 encoder..."
-if ! ffmpeg -hide_banner -encoders | grep -q "libx265"; then
+FFMPEG_ENCODERS="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
+if ! printf '%s\n' "$FFMPEG_ENCODERS" | grep -q "libx265"; then
     echo "ERROR: System ffmpeg does not report libx265 encoder!" >&2
     exit 1
 fi

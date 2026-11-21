@@ -34,8 +34,15 @@ if [ ! -x "$BIN_PATH" ]; then
     exit 1
 fi
 
-if ! find "$BUNDLE_DIR/_internal" -name 'libqxcb.so' | grep -q .; then
+QXCB_FOUND="$(find "$BUNDLE_DIR/_internal" -name 'libqxcb.so' -print -quit)"
+if [ -z "$QXCB_FOUND" ]; then
     echo "ERROR: Qt xcb plugin (libqxcb.so) missing from bundle!" >&2
+    exit 1
+fi
+echo "==> Found Qt xcb plugin: $QXCB_FOUND"
+
+if [ -z "$(find "$BUNDLE_DIR/_internal" -name 'libpython3*.so*' -print -quit)" ]; then
+    echo "ERROR: libpython shared library missing from bundle!" >&2
     exit 1
 fi
 

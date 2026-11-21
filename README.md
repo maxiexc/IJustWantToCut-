@@ -10,7 +10,7 @@
 - **輸出畫質控制**：採用 CRF 品質標準，並**自動鎖定原始素材碼率天花板**，確保高動態畫面不產生無謂的檔案體積膨脹。
 - **輸出**：支援匯出為高畫質 MP4 (H.265) 或經過全域調色盤 (palettegen) 處理的高畫質 GIF 動圖。
 - **支援去除音軌**。
-- **跨平台支援**：相容於 Windows 10/11 與 Ubuntu 22.04+。
+- **跨平台支援**：相容於 Windows 10/11 與 Ubuntu 22.04 ~ 26.04。
 
 ##  系統需求與相依套件
 
@@ -23,25 +23,59 @@
 
 ## 安裝與執行
 
-### Windows 系統
+### Ubuntu `.deb` 安裝包（Ubuntu 22.04 ~ 26.04，推薦）
+若已從 GitHub Releases 取得 `.deb` 安裝包（或透過下方 Docker 腳本自行建置），可直接使用 `apt` 安裝，系統將自動補齊 `libvlc5`、`ffmpeg` 與 Qt6 XCB 執行期依賴：
+```bash
+sudo apt update
+sudo apt install ./ijustwanttocut_<version>_amd64.deb
+```
+安裝完成後，可從桌面應用程式選單開啟 **IJustWantToCut**，或在終端機執行：
+```bash
+ijustwanttocut
+```
+（亦可使用 `IJustWantToCut` 指令名稱啟動，或加上 `--version` 查看版本。）
+
+### Ubuntu 建置 `.deb` 套件（Docker / GitHub Actions CI/CD）
+
+#### 方式一：透過 Docker 在 Windows / Linux 本機建置
+專案內已提供基於 Ubuntu 22.04 的多階段 Dockerfile，可在 Windows 主機直接產出相容於 Ubuntu 22.04 ~ 26.04 的 `.deb` 安裝檔（輸出至 `dist/` 目錄）：
+- **Windows (PowerShell)**：
+  ```powershell
+  # 僅建置 .deb 與 .sha256
+  .\packaging\ubuntu\build_docker.ps1
+
+  # 建置並依序在 Ubuntu 22.04、24.04、26.04 容器中安裝與執行煙霧測試
+  .\packaging\ubuntu\build_docker.ps1 -Verify
+  ```
+- **Linux / macOS (Bash)**：
+  ```bash
+  ./packaging/ubuntu/build_docker.sh --verify
+  ```
+
+#### 方式二：GitHub Actions 自動建置與發佈
+Workflow 設定位於 `.github/workflows/build-ubuntu-deb.yml`：
+- 推送至 `main` / `master`、建立 Pull Request 或手動觸發 `workflow_dispatch` 時，會自動建置 `.deb` 並在 Ubuntu `22.04` / `24.04` / `26.04` 容器中完成安裝、`ldd` 連結檢查與 `xvfb-run` GUI 啟動測試，產出可由 Workflow Artifacts 下載。
+- 推送 `v*` 標籤（例如 `git tag v0.1.0 && git push origin v0.1.0`）並通過三版本驗證後，會自動建立 GitHub Release 並附上 `.deb` 與 `.sha256` 檔案。
+
+### Windows 系統（從原始碼執行）
 1. 請先安裝 [VLC Media Player (Windows 64-bit)](https://www.videolan.org/)。
 2. 下載 [FFmpeg Windows 靜態編譯版](https://www.gyan.dev/ffmpeg/builds/) (推薦 release-essentials)。解壓縮後，將 `bin/` 目錄下的 `ffmpeg.exe` 與 `ffprobe.exe` 放置於本專案根目錄。
 3. 開啟命令提示字元或 PowerShell：
    ```bash
-   git clone https://github.com/yourusername/FastCut.git
-   cd FastCut
+   git clone https://github.com/maxiexc/IJustWantToCut-.git
+   cd IJustWantToCut-
    python -m venv venv
    venv\Scripts\activate
    pip install -r requirements.txt
    python main_ui.py
    ```
 
-### Ubuntu (Linux) 系統
+### Ubuntu (Linux) 系統（開發環境從原始碼執行）
 專案內提供了一鍵設定腳本，會自動安裝 VLC 依賴、下載 Linux 專用的 FFmpeg 靜態檔並設定好 Python 虛擬環境。
 1. 開啟終端機：
    ```bash
-   git clone https://github.com/yourusername/FastCut.git
-   cd FastCut
+   git clone https://github.com/maxiexc/IJustWantToCut-.git
+   cd IJustWantToCut-
    chmod +x setup_ubuntu.sh
    ./setup_ubuntu.sh
    ```

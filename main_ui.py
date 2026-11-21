@@ -46,6 +46,10 @@ class FastCutEditor(QMainWindow):
         self.ffmpeg_process.readyReadStandardError.connect(self.read_ffmpeg_progress)
         self.ffmpeg_process.finished.connect(self.export_finished)
         self.ffmpeg_error_log = ""  # 新增：用於儲存詳細日誌
+        self.is_exporting = False
+        self.export_cancelled = False
+        self.current_output_file = None
+        self.current_export_btn = None
 
     def init_ui(self):
         central_widget = QWidget()
@@ -131,11 +135,13 @@ class FastCutEditor(QMainWindow):
         self.combo_res_mp4 = QComboBox()
         self.combo_res_mp4.setEditable(True)
         self.combo_res_mp4.addItems(["原始解析度", "1920 (1080p)", "2560 (2K)", "3840 (4K)"])
+        self.combo_res_mp4.setCurrentText("1920 (1080p)")  # 【修改】預設 1080p
         layout_mp4.addRow("目標寬度:", self.combo_res_mp4)
 
-        # 【新增】輸出幀率上限 (可選：不限制 / 60 FPS / 30 FPS)
+        # 輸出幀率上限 (可選：不限制 / 60 FPS / 30 FPS)
         self.combo_fps_mp4 = QComboBox()
         self.combo_fps_mp4.addItems(["不限制 (原始幀率)", "上限 60 FPS", "上限 30 FPS"])
+        self.combo_fps_mp4.setCurrentText("上限 30 FPS")  # 【修改】預設上限 30 FPS
         layout_mp4.addRow("幀率上限:", self.combo_fps_mp4)
 
         # 【新增】8-bit 色彩相容性選項
@@ -307,9 +313,16 @@ class FastCutEditor(QMainWindow):
         return start_sec, end_sec, speed
 
     def start_export_mp4(self):
+        # 【新增】若正在執行 MP4 匯出，再點一次即為「停止匯出」
+        if self.is_exporting:
+            if self.current_export_btn == self.btn_export_mp4:
+                self.cancel_export()
+            return
+
         start_sec, end_sec, speed = self.pre_export_setup()
         if start_sec is None:
             return
+
         output_file, _ = QFileDialog.getSaveFileName(self, "匯出 MP4", "output.mp4", "MP4 影片檔 (*.mp4)")
         if not output_file:
             return
@@ -321,13 +334,8 @@ class FastCutEditor(QMainWindow):
         base_kbps = max(int(self.current_media_info['bitrate_bps'] / 1000), 30000)
         dynamic_max_kbps = int(base_kbps * max(1.0, speed))
 
-        # 【新增】解析幀率上限選單
         fps_text = self.combo_fps_mp4.currentText()
-        max_fps = None
-        if "60" in fps_text:
-            max_fps = 60
-        elif "30" in fps_text:
-            max_fps = 30
+        max_fps = 60 if "60" in fps_text else (30 if "30" in fps_text else None)
 
         cmd_list = self.processor.build_export_command(
             self.input_file,
@@ -343,29 +351,69 @@ class FastCutEditor(QMainWindow):
             source_fps=self.current_media_info.get('fps', 0.0),
             force_8bit=self.chk_force_8bit.isChecked()
         )
-        self.execute_ffmpeg(cmd_list, self.btn_export_mp4)
+        self.execute_ffmpeg(cmd_list, self.btn_export_mp4, output_file)
 
     def start_export_gif(self):
+        # 【新增】若正在執行 GIF 匯出，再點一次即為「停止匯出」
+        if self.is_exporting:
+            if self.current_export_btn == self.btn_export_gif:
+                self.cancel_export()
+            return
+
         start_sec, end_sec, speed = self.pre_export_setup()
-        if start_sec is None: return
-        output_file, _ = QFileDialog.getSaveFileName(self, "匯出 GIF", "output.gif", "GIF 動態圖像 (*.gif)")
-        if not output_file: return
+        if start_sec is None:
+            return
+
+        output_file, _ = QFileDialog.getSaveFileName(self, "匯出 GIF", "output.gif", "GIF 動圖 (*.gif)")
+        if not output_file:
+            return
 
         cmd_list = self.processor.build_gif_export_command(
-            self.input_file, output_file, start_sec, end_sec, speed,
-            self.parse_width(self.combo_res_gif.currentText()), self.spin_fps.value()
+            self.input_file, output_file, start_sec, end_sec,
+            speed_factor=speed,
+            target_width=self.parse_width(self.combo_res_gif.currentText()),
+            fps=self.spin_gif_fps.value()
         )
-        self.execute_ffmpeg(cmd_list, self.btn_export_gif)
+        self.execute_ffmpeg(cmd_list, self.btn_export_gif, output_file)
 
-    def execute_ffmpeg(self, cmd_list, button):
+    def execute_ffmpeg(self, cmd_list, button, output_file):
         self.progress_bar.setValue(0)
-        self.ffmpeg_error_log = ""  # 每次開始匯出時清空日誌
-        self.btn_export_mp4.setEnabled(False)
-        self.btn_export_gif.setEnabled(False)
-        button.setText("處理中，請稍候...")
-        self.current_export_btn = button  # 紀錄是哪個按鈕按下的，方便復原文字
+        self.ffmpeg_error_log = ""
+        self.is_exporting = True
+        self.export_cancelled = False
+        self.current_output_file = output_file
+        self.current_export_btn = button
 
+        # 鎖定另一顆按鈕，保留目前這顆作為「停止匯出」
+        other_btn = self.btn_export_gif if button == self.btn_export_mp4 else self.btn_export_mp4
+        other_btn.setEnabled(False)
+
+        button.setEnabled(True)
+        button.setText("停止匯出")
+        button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold;")
+
+        print("\n[FFmpeg CMD]", " ".join(shlex.quote(str(arg)) for arg in cmd_list))
         self.ffmpeg_process.start(cmd_list[0], cmd_list[1:])
+
+    def cancel_export(self):
+        if not self.is_exporting or self.ffmpeg_process.state() == QProcess.NotRunning:
+            return
+
+        self.export_cancelled = True
+        if self.current_export_btn:
+            self.current_export_btn.setEnabled(False)
+            self.current_export_btn.setText("正在停止...")
+
+        # 優先送出 'q' 讓 FFmpeg 跨平台正常退出，2 秒未結束則強制 kill
+        self.ffmpeg_process.write(b"q\n")
+        self.ffmpeg_process.closeWriteChannel()
+        QTimer.singleShot(2000, self._force_kill_ffmpeg)
+
+    def _force_kill_ffmpeg(self):
+        if self.export_cancelled and self.ffmpeg_process.state() != QProcess.NotRunning:
+            self.ffmpeg_process.kill()
+
+
 
     def read_ffmpeg_progress(self):
         output = self.ffmpeg_process.readAllStandardError().data().decode("utf-8")
@@ -380,23 +428,49 @@ class FastCutEditor(QMainWindow):
             percent = int((current_sec / self.target_duration_sec) * 100)
             self.progress_bar.setValue(min(percent, 99))
 
-    def export_finished(self, exit_code):
-        self.btn_export_mp4.setEnabled(True)
-        self.btn_export_gif.setEnabled(True)
+    def export_finished(self, exit_code, exit_status=None):
+        was_cancelled = self.export_cancelled
+        target_file = self.current_output_file
 
-        # 復原按鈕文字
-        self.btn_export_mp4.setText("匯出為 MP4 (H.265)")
-        self.btn_export_gif.setText("匯出為 GIF 動圖")
+        # 還原狀態與按鈕樣式
+        self.is_exporting = False
+        self.export_cancelled = False
+        self.current_output_file = None
+        self.current_export_btn = None
+
+        for btn, label in ((self.btn_export_mp4, "匯出為 MP4 (H.265)"),
+                           (self.btn_export_gif, "匯出為 GIF 動圖")):
+            btn.setEnabled(True)
+            btn.setText(label)
+            btn.setStyleSheet("")
+
+        if was_cancelled:
+            self.progress_bar.setValue(0)
+            if target_file and os.path.exists(target_file):
+                try:
+                    os.remove(target_file)
+                except OSError as e:
+                    print(f"[Warning] 清理未完成檔案失敗: {e}")
+            QMessageBox.information(self, "已停止", "已停止匯出，並移除未完成的檔案。")
+            return
 
         if exit_code == 0:
             self.progress_bar.setValue(100)
             QMessageBox.information(self, "完成", "匯出成功！")
         else:
             self.progress_bar.setValue(0)
-            # 【修改】拋出我們剛剛累積存下來的錯誤日誌 (取最後1000字避免過長卡死UI)
-            err_msg = self.ffmpeg_error_log[-1000:] if len(self.ffmpeg_error_log) > 1000 else self.ffmpeg_error_log
-            QMessageBox.critical(self, "錯誤", f"匯出失敗，錯誤代碼: {exit_code}\n\n詳細原因:\n{err_msg}")
-
+            print("\n========== FFmpeg 完整錯誤日誌 ==========")
+            print(self.ffmpeg_error_log)
+            print("=========================================")
+            key_lines = [
+                line for line in self.ffmpeg_error_log.splitlines()
+                if any(k in line.lower() for k in ("error", "invalid", "incompatible", "failed", "cannot", "unable"))
+            ]
+            err_msg = "\n".join(key_lines[-15:]) if key_lines else self.ffmpeg_error_log[-2500:]
+            QMessageBox.critical(
+                self, "錯誤",
+                f"匯出失敗，錯誤代碼: {exit_code}\n\n關鍵錯誤（完整日誌已印於終端機）:\n{err_msg}"
+            )
 
 if __name__ == "__main__":
     if sys.platform.startswith('linux'):

@@ -1,9 +1,62 @@
 import sys
 import os
 import re
-import vlc
 import ctypes
+import ctypes.util
 import shlex  # 【新增】格式化印出含空白路徑的 FFmpeg 指令
+import argparse
+
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    try:
+        # 啟用 X11 多執行緒安全鎖，解除 --no-xlib 限制
+        ctypes.CDLL("libX11.so.6").XInitThreads()
+    except OSError:
+        pass
+
+
+def _configure_vlc_environment():
+    """在匯入 python-vlc 前配置 libvlc 與 plugins 路徑。"""
+    if getattr(sys, "frozen", False):
+        candidate_roots = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidate_roots.append(meipass)
+        candidate_roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+
+        lib_name = "libvlc.dll" if sys.platform == "win32" else "libvlc.so.5"
+        for root in candidate_roots:
+            vlc_dir = os.path.join(root, "vlc")
+            lib_path = os.path.join(vlc_dir, lib_name)
+            if os.path.isfile(lib_path):
+                os.environ.setdefault("PYTHON_VLC_LIB_PATH", lib_path)
+                plugins_dir = os.path.join(vlc_dir, "plugins")
+                module_dir = plugins_dir if os.path.isdir(plugins_dir) else vlc_dir
+                os.environ.setdefault("PYTHON_VLC_MODULE_PATH", module_dir)
+                os.environ.setdefault("VLC_PLUGIN_PATH", module_dir)
+                break
+
+    if sys.platform.startswith("linux") and "PYTHON_VLC_LIB_PATH" not in os.environ:
+        found = ctypes.util.find_library("vlc")
+        if not found:
+            for candidate in (
+                "/usr/lib/x86_64-linux-gnu/libvlc.so.5",
+                "/usr/lib/aarch64-linux-gnu/libvlc.so.5",
+                "/usr/lib/libvlc.so.5",
+            ):
+                if os.path.isfile(candidate):
+                    os.environ["PYTHON_VLC_LIB_PATH"] = candidate
+                    break
+
+
+_configure_vlc_environment()
+
+_VLC_IMPORT_ERROR = None
+try:
+    import vlc
+except Exception as exc:  # ImportError, OSError, NotImplementedError
+    vlc = None
+    _VLC_IMPORT_ERROR = exc
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QFrame, QPushButton, QLabel,
@@ -13,20 +66,17 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, QTimer, QProcess
 
 from media_processor import MediaProcessor
+from version import APP_NAME, APP_VERSION
 
-if sys.platform.startswith('linux'):
-    os.environ["QT_QPA_PLATFORM"] = "xcb"
-    try:
-        # 啟用 X11 多執行緒安全鎖，解除 --no-xlib 限制
-        ctypes.CDLL("libX11.so.6").XInitThreads()
-    except OSError:
-        pass
+MP4_BTN_STYLE = "background-color: #2980b9; color: white; font-weight: bold;"
+GIF_BTN_STYLE = "background-color: #8e44ad; color: white; font-weight: bold;"
+STOP_BTN_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
 
 
 class FastCutEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FastCut - 運動相機/空拍機 剪輯變速工具")
+        self.setWindowTitle(f"{APP_NAME} - 剪輯變速工具")
         self.setGeometry(100, 100, 1050, 650)
 
         self.processor = MediaProcessor()
@@ -147,9 +197,6 @@ class FastCutEditor(QMainWindow):
         # 【新增】8-bit 色彩相容性選項
         self.chk_force_8bit = QCheckBox("強制輸出 8-bit (yuv420p)")
         layout_mp4.addRow("色彩相容:", self.chk_force_8bit)
-        self.combo_res_mp4.setEditable(True)
-        self.combo_res_mp4.addItems(["原始解析度", "1920 (1080p)", "2560 (2K)", "3840 (4K)"])
-        layout_mp4.addRow("目標寬度:", self.combo_res_mp4)
 
         self.slider_quality = QSlider(Qt.Horizontal)
         self.slider_quality.setRange(18, 32)
@@ -164,7 +211,7 @@ class FastCutEditor(QMainWindow):
 
         self.btn_export_mp4 = QPushButton("匯出為 MP4 (H.265)")
         self.btn_export_mp4.setMinimumHeight(40)
-        self.btn_export_mp4.setStyleSheet("background-color: #2980b9; color: white; font-weight: bold;")
+        self.btn_export_mp4.setStyleSheet(MP4_BTN_STYLE)
         self.btn_export_mp4.clicked.connect(self.start_export_mp4)
         self.btn_export_mp4.setEnabled(False)
         layout_mp4.addRow(self.btn_export_mp4)
@@ -188,7 +235,7 @@ class FastCutEditor(QMainWindow):
 
         self.btn_export_gif = QPushButton("匯出為 GIF 動圖")
         self.btn_export_gif.setMinimumHeight(40)
-        self.btn_export_gif.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold;")
+        self.btn_export_gif.setStyleSheet(GIF_BTN_STYLE)
         self.btn_export_gif.clicked.connect(self.start_export_gif)
         self.btn_export_gif.setEnabled(False)
         layout_gif.addRow(self.btn_export_gif)
@@ -207,18 +254,29 @@ class FastCutEditor(QMainWindow):
         main_layout.addLayout(right_layout, stretch=1)
 
     def init_vlc(self):
+        if vlc is None:
+            raise RuntimeError(f"無法載入 VLC 模組: {_VLC_IMPORT_ERROR}")
+
         if sys.platform.startswith('linux'):
             # 【修改】使用 any 自動偵測系統可用的硬體解碼器（VAAPI / NVDEC 等），搭配 OpenGL 渲染
             self.vlc_instance = vlc.Instance(
                 "--avcodec-hw=any",
                 "--vout=gl"
             )
+            if self.vlc_instance is None:
+                self.vlc_instance = vlc.Instance()
             # 確保 QFrame 建立獨立的原生 X11 視窗句柄供 OpenGL/VAAPI 繪製
             self.video_frame.setAttribute(Qt.WA_NativeWindow, True)
         else:
             self.vlc_instance = vlc.Instance()
 
+        if self.vlc_instance is None:
+            raise RuntimeError("無法初始化 VLC 實例，請確認系統已安裝 libvlc5 與對應外掛。")
+
         self.media_player = self.vlc_instance.media_player_new()
+        if self.media_player is None:
+            raise RuntimeError("無法建立 VLC MediaPlayer。")
+
         win_id = int(self.video_frame.winId())
         if sys.platform.startswith('linux'):
             self.media_player.set_xwindow(win_id)
@@ -227,29 +285,44 @@ class FastCutEditor(QMainWindow):
 
     # ---------- 播放與操作邏輯 ----------
     def load_video(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "選擇影片素材", "", "Video Files (*.mp4 *.mov *.avi)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "選擇影片素材", "", "Video Files (*.mp4 *.mov *.avi *.mkv)"
+        )
         if file_path:
-            self.input_file = file_path
-            self.current_media_info = self.processor.get_media_info(file_path)
-            max_kbps = int(self.current_media_info['bitrate_bps'] / 1000)
-            src_fps = self.current_media_info.get('fps', 0.0)
-            src_pix = self.current_media_info.get('pix_fmt', 'unknown')
-            self.lbl_bitrate_info.setText(f"來源: {src_fps:.2f} fps | {src_pix} | 碼率 {max_kbps} kbps")
+            self.load_video_file(file_path)
 
-            total_ms = int(self.current_media_info['duration_sec'] * 1000)
-            self.mark_in_ms = 0
-            self.mark_out_ms = total_ms
-            self.update_mark_label()
+    def load_video_file(self, file_path):
+        if not os.path.isfile(file_path):
+            QMessageBox.warning(self, "找不到檔案", f"找不到影片檔案:\n{file_path}")
+            return
 
-            self.slider_progress.setRange(0, total_ms)
-            self.slider_progress.setEnabled(True)
-            self.btn_play.setEnabled(True)
-            self.btn_export_mp4.setEnabled(True)
-            self.btn_export_gif.setEnabled(True)
+        try:
+            media_info = self.processor.get_media_info(file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "讀取失敗", f"無法解析影片資訊:\n{exc}")
+            return
 
-            media = self.vlc_instance.media_new(file_path)
-            self.media_player.set_media(media)
-            self.media_player.play()
+        self.input_file = file_path
+        self.current_media_info = media_info
+        max_kbps = int(self.current_media_info['bitrate_bps'] / 1000)
+        src_fps = self.current_media_info.get('fps', 0.0)
+        src_pix = self.current_media_info.get('pix_fmt', 'unknown')
+        self.lbl_bitrate_info.setText(f"來源: {src_fps:.2f} fps | {src_pix} | 碼率 {max_kbps} kbps")
+
+        total_ms = int(self.current_media_info['duration_sec'] * 1000)
+        self.mark_in_ms = 0
+        self.mark_out_ms = total_ms
+        self.update_mark_label()
+
+        self.slider_progress.setRange(0, total_ms)
+        self.slider_progress.setEnabled(True)
+        self.btn_play.setEnabled(True)
+        self.btn_export_mp4.setEnabled(True)
+        self.btn_export_gif.setEnabled(True)
+
+        media = self.vlc_instance.media_new(file_path)
+        self.media_player.set_media(media)
+        self.media_player.play()
 
     def toggle_play(self):
         if self.media_player.is_playing():
@@ -372,7 +445,7 @@ class FastCutEditor(QMainWindow):
             self.input_file, output_file, start_sec, end_sec,
             speed_factor=speed,
             target_width=self.parse_width(self.combo_res_gif.currentText()),
-            fps=self.spin_gif_fps.value()
+            fps=self.spin_fps.value()
         )
         self.execute_ffmpeg(cmd_list, self.btn_export_gif, output_file)
 
@@ -390,7 +463,7 @@ class FastCutEditor(QMainWindow):
 
         button.setEnabled(True)
         button.setText("停止匯出")
-        button.setStyleSheet("background-color: #c0392b; color: white; font-weight: bold;")
+        button.setStyleSheet(STOP_BTN_STYLE)
 
         print("\n[FFmpeg CMD]", " ".join(shlex.quote(str(arg)) for arg in cmd_list))
         self.ffmpeg_process.start(cmd_list[0], cmd_list[1:])
@@ -413,10 +486,8 @@ class FastCutEditor(QMainWindow):
         if self.export_cancelled and self.ffmpeg_process.state() != QProcess.NotRunning:
             self.ffmpeg_process.kill()
 
-
-
     def read_ffmpeg_progress(self):
-        output = self.ffmpeg_process.readAllStandardError().data().decode("utf-8")
+        output = self.ffmpeg_process.readAllStandardError().data().decode("utf-8", errors="replace")
 
         # 【修改】將文字持續附加到日誌變數中，避免進度條讀取後文字消失
         self.ffmpeg_error_log += output
@@ -438,11 +509,13 @@ class FastCutEditor(QMainWindow):
         self.current_output_file = None
         self.current_export_btn = None
 
-        for btn, label in ((self.btn_export_mp4, "匯出為 MP4 (H.265)"),
-                           (self.btn_export_gif, "匯出為 GIF 動圖")):
+        for btn, label, style in (
+            (self.btn_export_mp4, "匯出為 MP4 (H.265)", MP4_BTN_STYLE),
+            (self.btn_export_gif, "匯出為 GIF 動圖", GIF_BTN_STYLE),
+        ):
             btn.setEnabled(True)
             btn.setText(label)
-            btn.setStyleSheet("")
+            btn.setStyleSheet(style)
 
         if was_cancelled:
             self.progress_bar.setValue(0)
@@ -472,15 +545,108 @@ class FastCutEditor(QMainWindow):
                 f"匯出失敗，錯誤代碼: {exit_code}\n\n關鍵錯誤（完整日誌已印於終端機）:\n{err_msg}"
             )
 
-if __name__ == "__main__":
-    if sys.platform.startswith('linux'):
-        os.environ["QT_QPA_PLATFORM"] = "xcb"
-        try:
-            # 預先初始化 X11 多執行緒安全鎖，才能安心移除 --no-xlib 並啟用硬解/GL
-            ctypes.CDLL("libX11.so.6").XInitThreads()
-        except OSError:
-            pass
-    app = QApplication(sys.argv)
-    window = FastCutEditor()
+    def closeEvent(self, event):
+        if hasattr(self, "timer") and self.timer is not None:
+            self.timer.stop()
+
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process is not None:
+            if self.ffmpeg_process.state() != QProcess.NotRunning:
+                self.ffmpeg_process.terminate()
+                if not self.ffmpeg_process.waitForFinished(1500):
+                    self.ffmpeg_process.kill()
+
+        if hasattr(self, "media_player") and self.media_player is not None:
+            try:
+                self.media_player.stop()
+                self.media_player.release()
+            except Exception:
+                pass
+            self.media_player = None
+
+        if hasattr(self, "vlc_instance") and self.vlc_instance is not None:
+            try:
+                self.vlc_instance.release()
+            except Exception:
+                pass
+            self.vlc_instance = None
+
+        super().closeEvent(event)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog=APP_NAME, add_help=True)
+    parser.add_argument("--version", action="store_true", help="顯示版本資訊並結束")
+    parser.add_argument("--smoke-test", action="store_true", help="執行啟動冒煙測試並結束")
+    parser.add_argument("input_file", nargs="?", help="預先載入的影片路徑")
+    return parser.parse_known_args(argv)
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    args, qt_args = parse_args(argv)
+
+    if args.version:
+        print(f"{APP_NAME} {APP_VERSION}")
+        return 0
+
+    app = QApplication(sys.argv[:1] + qt_args)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setDesktopFileName("ijustwanttocut")
+
+    if vlc is None:
+        err_detail = f"無法載入 VLC 播放引擎 (libvlc)。請確認系統已安裝 libvlc5 與 VLC 外掛。\n詳細錯誤: {_VLC_IMPORT_ERROR}"
+        if args.smoke_test:
+            print(f"[SMOKE-TEST] ERROR: {err_detail}", file=sys.stderr)
+        else:
+            QMessageBox.critical(None, APP_NAME, err_detail)
+        return 1
+
+    try:
+        window = FastCutEditor()
+    except Exception as exc:
+        if args.smoke_test:
+            print(f"[SMOKE-TEST] ERROR: Failed to initialize FastCutEditor: {exc}", file=sys.stderr)
+        else:
+            QMessageBox.critical(None, APP_NAME, f"程式初始化失敗:\n{exc}")
+        return 1
+
+    if args.smoke_test:
+        tools = window.processor.check_tools()
+        missing_tools = [name for name, (ok, _) in tools.items() if not ok]
+        if missing_tools:
+            print(f"[SMOKE-TEST] ERROR: Missing tools {missing_tools}: {tools}", file=sys.stderr)
+            window.close()
+            return 1
+
+        if window.vlc_instance is None or window.media_player is None:
+            print("[SMOKE-TEST] ERROR: VLC instance or media player is None", file=sys.stderr)
+            window.close()
+            return 1
+
+        window.show()
+
+        def _finish_smoke_test():
+            window.close()
+            app.quit()
+
+        QTimer.singleShot(500, _finish_smoke_test)
+        exit_code = app.exec()
+        if exit_code != 0:
+            print(f"[SMOKE-TEST] ERROR: Qt event loop exited with {exit_code}", file=sys.stderr)
+            return exit_code
+
+        print("[SMOKE-TEST] OK")
+        return 0
+
+    if args.input_file:
+        QTimer.singleShot(0, lambda: window.load_video_file(args.input_file))
+
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

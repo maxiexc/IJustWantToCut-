@@ -22,3 +22,9 @@ ffprobe
 # 系統產生的隱藏檔
 .DS_Store
 Thumbs.db
+
+# 打包與建置產物
+build/
+dist/
+*.deb
+*.deb.sha256

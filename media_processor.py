@@ -8,22 +8,54 @@ from fractions import Fraction
 
 class MediaProcessor:
     def __init__(self):
-        # 跨平台自動尋找 ffmpeg 與 ffprobe（優先使用專案根目錄靜態版，其次系統 PATH）
+        # 跨平台自動尋找 ffmpeg 與 ffprobe（優先使用打包目錄與專案目錄，其次系統 PATH）
         self.ffmpeg_path = self._resolve_executable("ffmpeg")
         self.ffprobe_path = self._resolve_executable("ffprobe")
 
+    def _candidate_bin_dirs(self):
+        """依優先順序回傳可能放置 ffmpeg / ffprobe 的目錄（去重並保留順序）。"""
+        dirs = []
+        if getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                dirs.append(meipass)
+                dirs.append(os.path.join(meipass, "bin"))
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            dirs.append(exe_dir)
+            dirs.append(os.path.join(exe_dir, "bin"))
+
+        dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        dirs.append(os.path.abspath("."))
+
+        unique_dirs = []
+        seen = set()
+        for d in dirs:
+            norm = os.path.normpath(d)
+            if norm not in seen:
+                seen.add(norm)
+                unique_dirs.append(norm)
+        return unique_dirs
+
     def _resolve_executable(self, cmd_name):
         local_name = cmd_name + ".exe" if sys.platform == "win32" else cmd_name
-        local_path = os.path.abspath(os.path.join(".", local_name))
-
-        if os.path.exists(local_path):
-            return local_path
+        for base_dir in self._candidate_bin_dirs():
+            candidate = os.path.join(base_dir, local_name)
+            if os.path.isfile(candidate):
+                return candidate
 
         system_path = shutil.which(cmd_name)
         if system_path:
             return system_path
 
         return cmd_name
+
+    def check_tools(self):
+        """檢查 ffmpeg 與 ffprobe 是否皆可取得。"""
+        result = {}
+        for name, path in (("ffmpeg", self.ffmpeg_path), ("ffprobe", self.ffprobe_path)):
+            exists = os.path.isfile(path) or bool(shutil.which(path))
+            result[name] = (exists, path)
+        return result
 
     @staticmethod
     def _parse_int(value, default):
@@ -55,7 +87,16 @@ class MediaProcessor:
             "-of", "json",
             file_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        run_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        result = subprocess.run(cmd, **run_kwargs)
         if result.returncode != 0:
             raise RuntimeError(f"FFprobe 執行失敗: {result.stderr}")
 

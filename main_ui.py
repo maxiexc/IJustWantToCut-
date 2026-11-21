@@ -3,6 +3,8 @@ import os
 import re
 import vlc
 import ctypes
+import shlex  # 【新增】格式化印出含空白路徑的 FFmpeg 指令
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QFrame, QPushButton, QLabel,
                                QSlider, QCheckBox, QComboBox, QFileDialog,
@@ -14,6 +16,11 @@ from media_processor import MediaProcessor
 
 if sys.platform.startswith('linux'):
     os.environ["QT_QPA_PLATFORM"] = "xcb"
+    try:
+        # 啟用 X11 多執行緒安全鎖，解除 --no-xlib 限制
+        ctypes.CDLL("libX11.so.6").XInitThreads()
+    except OSError:
+        pass
 
 
 class FastCutEditor(QMainWindow):
@@ -99,7 +106,7 @@ class FastCutEditor(QMainWindow):
         self.slider_speed.setValue(10)
         self.spin_speed = QDoubleSpinBox()
         self.spin_speed.setRange(0.05, 5.0)
-        self.spin_speed.setSingleStep(0.1)
+        self.spin_speed.setSingleStep(0.05)
         self.spin_speed.setValue(1.0)
         self.spin_speed.setSuffix(" x")
 
@@ -195,9 +202,9 @@ class FastCutEditor(QMainWindow):
 
     def init_vlc(self):
         if sys.platform.startswith('linux'):
-            # 對齊原生 VLC 實測成功路徑：Intel VAAPI 硬解 + OpenGL 渲染
+            # 【修改】使用 any 自動偵測系統可用的硬體解碼器（VAAPI / NVDEC 等），搭配 OpenGL 渲染
             self.vlc_instance = vlc.Instance(
-                "--avcodec-hw=vaapi",
+                "--avcodec-hw=any",
                 "--vout=gl"
             )
             # 確保 QFrame 建立獨立的原生 X11 視窗句柄供 OpenGL/VAAPI 繪製
@@ -219,7 +226,9 @@ class FastCutEditor(QMainWindow):
             self.input_file = file_path
             self.current_media_info = self.processor.get_media_info(file_path)
             max_kbps = int(self.current_media_info['bitrate_bps'] / 1000)
-            self.lbl_bitrate_info.setText(f"原始碼率上限: 已鎖定最高不超過 {max_kbps} kbps")
+            src_fps = self.current_media_info.get('fps', 0.0)
+            src_pix = self.current_media_info.get('pix_fmt', 'unknown')
+            self.lbl_bitrate_info.setText(f"來源: {src_fps:.2f} fps | {src_pix} | 碼率 {max_kbps} kbps")
 
             total_ms = int(self.current_media_info['duration_sec'] * 1000)
             self.mark_in_ms = 0
@@ -299,17 +308,40 @@ class FastCutEditor(QMainWindow):
 
     def start_export_mp4(self):
         start_sec, end_sec, speed = self.pre_export_setup()
-        if start_sec is None: return
+        if start_sec is None:
+            return
         output_file, _ = QFileDialog.getSaveFileName(self, "匯出 MP4", "output.mp4", "MP4 影片檔 (*.mp4)")
-        if not output_file: return
+        if not output_file:
+            return
 
         # 【新增防呆】如果使用者勾選了去除音軌，或「原始影片根本沒音軌」，都強制設定為 True
         actual_remove_audio = self.chk_remove_audio.isChecked() or not self.current_media_info.get('has_audio', True)
 
+        # 動態計算碼率上限（至少保底 30 Mbps，加速時等比例放寬）
+        base_kbps = max(int(self.current_media_info['bitrate_bps'] / 1000), 30000)
+        dynamic_max_kbps = int(base_kbps * max(1.0, speed))
+
+        # 【新增】解析幀率上限選單
+        fps_text = self.combo_fps_mp4.currentText()
+        max_fps = None
+        if "60" in fps_text:
+            max_fps = 60
+        elif "30" in fps_text:
+            max_fps = 30
+
         cmd_list = self.processor.build_export_command(
-            self.input_file, output_file, start_sec, end_sec, speed,
-            actual_remove_audio, self.parse_width(self.combo_res_mp4.currentText()),
-            int(self.current_media_info['bitrate_bps'] / 1000), self.slider_quality.value()
+            self.input_file,
+            output_file,
+            start_sec,
+            end_sec,
+            speed_factor=speed,
+            remove_audio=actual_remove_audio,
+            target_width=self.parse_width(self.combo_res_mp4.currentText()),
+            max_bitrate_kbps=dynamic_max_kbps,
+            crf=self.slider_quality.value(),
+            max_fps=max_fps,
+            source_fps=self.current_media_info.get('fps', 0.0),
+            force_8bit=self.chk_force_8bit.isChecked()
         )
         self.execute_ffmpeg(cmd_list, self.btn_export_mp4)
 

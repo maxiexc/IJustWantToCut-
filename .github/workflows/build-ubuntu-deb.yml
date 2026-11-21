@@ -31,7 +31,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve package version
         id: meta
@@ -50,10 +50,10 @@ jobs:
           echo "version=${VER}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build .deb inside Ubuntu 22.04 container
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packaging/ubuntu/Dockerfile
@@ -71,7 +71,7 @@ jobs:
           test -n "$(find dist -maxdepth 1 -name 'ijustwanttocut_*.deb.sha256')"
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ijustwanttocut-ubuntu-deb
           path: |
@@ -89,10 +89,10 @@ jobs:
         ubuntu: ["22.04", "24.04", "26.04"]
     steps:
       - name: Checkout verification script
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download .deb artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ijustwanttocut-ubuntu-deb
           path: dist
@@ -117,13 +117,13 @@ jobs:
       contents: write
     steps:
       - name: Download .deb artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ijustwanttocut-ubuntu-deb
           path: dist
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.deb

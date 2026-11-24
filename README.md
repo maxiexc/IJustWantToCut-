@@ -23,6 +23,13 @@
 
 ## 安裝與執行
 
+### Windows 執行檔安裝（Windows 10 / 11 64-bit，推薦）
+從 GitHub Releases 下載 Windows 發行檔（已內嵌 FFmpeg 與 libVLC，**不需預先安裝 Python、VLC 或 FFmpeg**）：
+- **安裝版（推薦）**：下載 `IJustWantToCut-<version>-win64-setup.exe` 執行安裝精靈即可建立開始選單與桌面捷徑。
+- **免安裝可攜版**：下載 `IJustWantToCut-<version>-win64-portable.zip`，解壓縮後直接執行 `IJustWantToCut\IJustWantToCut.exe`。
+
+> 首次執行未簽章之執行檔時，Windows SmartScreen 可能會跳出提示，點選「其他資訊 → 仍要執行」即可。
+
 ### Ubuntu `.deb` 安裝包（Ubuntu 22.04 ~ 26.04，推薦）
 若已從 GitHub Releases 取得 `.deb` 安裝包（或透過下方 Docker 腳本自行建置），可直接使用 `apt` 安裝，系統將自動補齊 `libvlc5`、`ffmpeg` 與 Qt6 XCB 執行期依賴：
 ```bash
@@ -35,10 +42,26 @@ ijustwanttocut
 ```
 （亦可使用 `IJustWantToCut` 指令名稱啟動，或加上 `--version` 查看版本。）
 
-### Ubuntu 建置 `.deb` 套件（Docker / GitHub Actions CI/CD）
+### 從原始碼打包（Windows / Ubuntu / GitHub Actions CI/CD）
 
-#### 方式一：透過 Docker 在 Windows / Linux 本機建置
-專案內已提供基於 Ubuntu 22.04 的多階段 Dockerfile，可在 Windows 主機直接產出相容於 Ubuntu 22.04 ~ 26.04 的 `.deb` 安裝檔（輸出至 `dist/` 目錄）：
+#### 方式一：GitHub Actions 跨平台自動建置與發佈（推薦）
+整合式跨平台 Workflow 位於 `.github/workflows/release.yml`：
+- 推送至 `main` / `master`、建立 Pull Request 或手動觸發 `workflow_dispatch` 時，會同步執行：
+  1. **Ubuntu `.deb`**：於 Ubuntu 22.04 容器編譯，並在 Ubuntu `22.04` / `24.04` / `26.04` 容器驗證安裝、`ldd` 連結與 `xvfb-run` GUI 啟動測試。
+  2. **Windows 安裝程式 & 可攜包**：於 `windows-2025`（Python 3.11 + PyInstaller + Inno Setup 6）打包內嵌 FFmpeg 與 libVLC 的 `setup.exe` 與 `portable.zip`，並自動實測可攜版啟動、靜默安裝、安裝後啟動與靜默解除安裝。
+- 推送 `v*` 標籤（例如 `git tag v0.1.0 && git push origin v0.1.0`）且雙平台驗證全數通過後，自動建立單一 GitHub Release 並附上所有平台產物與 `.sha256` 校驗檔。
+
+#### 方式二：於本機建置 Windows 發行檔
+需準備 **Python 3.10 或 3.11 (64-bit)** 與 **Inno Setup 6**：
+```powershell
+pip install -r packaging\windows\requirements-build.txt
+.\packaging\windows\build_windows.ps1
+# 驗證產出的 Portable Zip 與 Setup 安裝檔
+.\packaging\windows\verify_windows.ps1
+```
+
+#### 方式三：透過 Docker 於本機建置 Ubuntu `.deb`
+專案內已提供基於 Ubuntu 22.04 的多階段 Dockerfile，可在 Windows / Linux / macOS 直接產出相容於 Ubuntu 22.04 ~ 26.04 的 `.deb`（輸出至 `dist/`）：
 - **Windows (PowerShell)**：
   ```powershell
   # 僅建置 .deb 與 .sha256
@@ -51,11 +74,6 @@ ijustwanttocut
   ```bash
   ./packaging/ubuntu/build_docker.sh --verify
   ```
-
-#### 方式二：GitHub Actions 自動建置與發佈
-Workflow 設定位於 `.github/workflows/build-ubuntu-deb.yml`：
-- 推送至 `main` / `master`、建立 Pull Request 或手動觸發 `workflow_dispatch` 時，會自動建置 `.deb` 並在 Ubuntu `22.04` / `24.04` / `26.04` 容器中完成安裝、`ldd` 連結檢查與 `xvfb-run` GUI 啟動測試，產出可由 Workflow Artifacts 下載。
-- 推送 `v*` 標籤（例如 `git tag v0.1.0 && git push origin v0.1.0`）並通過三版本驗證後，會自動建立 GitHub Release 並附上 `.deb` 與 `.sha256` 檔案。
 
 ### Windows 系統（從原始碼執行）
 1. 請先安裝 [VLC Media Player (Windows 64-bit)](https://www.videolan.org/)。

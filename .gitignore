@@ -26,5 +26,6 @@ Thumbs.db
 # 打包與建置產物
 build/
 dist/
+Dependencies.zip
 *.deb
-*.deb.sha256
+*.sha256

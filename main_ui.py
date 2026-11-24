@@ -15,20 +15,38 @@ if sys.platform.startswith("linux"):
         pass
 
 
+_VLC_DLL_DIR_HANDLES = []
+
+
 def _configure_vlc_environment():
     """在匯入 python-vlc 前配置 libvlc 與 plugins 路徑。"""
     if getattr(sys, "frozen", False):
-        candidate_roots = []
+        candidate_roots = [os.path.dirname(os.path.abspath(sys.executable))]
         meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
+        if meipass and os.path.normpath(meipass) != os.path.normpath(candidate_roots[0]):
             candidate_roots.append(meipass)
-        candidate_roots.append(os.path.dirname(os.path.abspath(sys.executable)))
 
         lib_name = "libvlc.dll" if sys.platform == "win32" else "libvlc.so.5"
         for root in candidate_roots:
             vlc_dir = os.path.join(root, "vlc")
             lib_path = os.path.join(vlc_dir, lib_name)
             if os.path.isfile(lib_path):
+                if sys.platform == "win32":
+                    if hasattr(os, "add_dll_directory"):
+                        try:
+                            _VLC_DLL_DIR_HANDLES.append(os.add_dll_directory(vlc_dir))
+                        except OSError:
+                            pass
+                    current_path = os.environ.get("PATH", "")
+                    if vlc_dir not in current_path.split(os.pathsep):
+                        os.environ["PATH"] = vlc_dir + os.pathsep + current_path
+                    core_path = os.path.join(vlc_dir, "libvlccore.dll")
+                    if os.path.isfile(core_path):
+                        try:
+                            ctypes.CDLL(core_path)
+                        except OSError:
+                            pass
+
                 os.environ.setdefault("PYTHON_VLC_LIB_PATH", lib_path)
                 plugins_dir = os.path.join(vlc_dir, "plugins")
                 module_dir = plugins_dir if os.path.isdir(plugins_dir) else vlc_dir
@@ -64,9 +82,37 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QProgressBar, QFormLayout, QMessageBox, QDoubleSpinBox,
                                QTabWidget, QSpinBox, QGroupBox)  # 新增匯入元件
 from PySide6.QtCore import Qt, QTimer, QProcess
+from PySide6.QtGui import QIcon
 
 from media_processor import MediaProcessor
 from version import APP_NAME, APP_VERSION
+
+
+def _resolve_icon_path():
+    """尋找應用程式圖示路徑（支援打包與開發模式）。"""
+    candidates = []
+    preferred_names = ("ijustwanttocut.ico", "ijustwanttocut.svg") if sys.platform == "win32" else ("ijustwanttocut.svg", "ijustwanttocut.ico")
+
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        meipass = getattr(sys, "_MEIPASS", None)
+        for root in (exe_dir, meipass):
+            if not root:
+                continue
+            for name in preferred_names:
+                candidates.append(os.path.join(root, "assets", name))
+
+    if sys.platform.startswith("linux"):
+        candidates.append("/usr/share/icons/hicolor/scalable/apps/ijustwanttocut.svg")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in preferred_names:
+        candidates.append(os.path.join(script_dir, "packaging", "assets", name))
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
 
 MP4_BTN_STYLE = "background-color: #2980b9; color: white; font-weight: bold;"
 GIF_BTN_STYLE = "background-color: #8e44ad; color: white; font-weight: bold;"
@@ -588,7 +634,7 @@ def main(argv=None):
     args, qt_args = parse_args(argv)
 
     if args.version:
-        print(f"{APP_NAME} {APP_VERSION}")
+        print(f"{APP_NAME} {APP_VERSION}", flush=True)
         return 0
 
     app = QApplication(sys.argv[:1] + qt_args)
@@ -596,10 +642,18 @@ def main(argv=None):
     app.setApplicationVersion(APP_VERSION)
     app.setDesktopFileName("ijustwanttocut")
 
+    icon_path = _resolve_icon_path()
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+
     if vlc is None:
-        err_detail = f"無法載入 VLC 播放引擎 (libvlc)。請確認系統已安裝 libvlc5 與 VLC 外掛。\n詳細錯誤: {_VLC_IMPORT_ERROR}"
+        if sys.platform == "win32":
+            vlc_hint = "請確認安裝目錄下包含完整的 vlc\\libvlc.dll，或系統已安裝 64-bit VLC Media Player。"
+        else:
+            vlc_hint = "請確認系統已安裝 libvlc5 與 VLC 外掛。"
+        err_detail = f"無法載入 VLC 播放引擎 (libvlc)。{vlc_hint}\n詳細錯誤: {_VLC_IMPORT_ERROR}"
         if args.smoke_test:
-            print(f"[SMOKE-TEST] ERROR: {err_detail}", file=sys.stderr)
+            print(f"[SMOKE-TEST] ERROR: {err_detail}", file=sys.stderr, flush=True)
         else:
             QMessageBox.critical(None, APP_NAME, err_detail)
         return 1
@@ -608,7 +662,7 @@ def main(argv=None):
         window = FastCutEditor()
     except Exception as exc:
         if args.smoke_test:
-            print(f"[SMOKE-TEST] ERROR: Failed to initialize FastCutEditor: {exc}", file=sys.stderr)
+            print(f"[SMOKE-TEST] ERROR: Failed to initialize FastCutEditor: {exc}", file=sys.stderr, flush=True)
         else:
             QMessageBox.critical(None, APP_NAME, f"程式初始化失敗:\n{exc}")
         return 1
@@ -617,14 +671,19 @@ def main(argv=None):
         tools = window.processor.check_tools()
         missing_tools = [name for name, (ok, _) in tools.items() if not ok]
         if missing_tools:
-            print(f"[SMOKE-TEST] ERROR: Missing tools {missing_tools}: {tools}", file=sys.stderr)
+            print(f"[SMOKE-TEST] ERROR: Missing tools {missing_tools}: {tools}", file=sys.stderr, flush=True)
             window.close()
             return 1
 
         if window.vlc_instance is None or window.media_player is None:
-            print("[SMOKE-TEST] ERROR: VLC instance or media player is None", file=sys.stderr)
+            print("[SMOKE-TEST] ERROR: VLC instance or media player is None", file=sys.stderr, flush=True)
             window.close()
             return 1
+
+        print(f"[SMOKE-TEST] ffmpeg={tools['ffmpeg'][1]}", flush=True)
+        print(f"[SMOKE-TEST] ffprobe={tools['ffprobe'][1]}", flush=True)
+        print(f"[SMOKE-TEST] vlc_lib={os.environ.get('PYTHON_VLC_LIB_PATH', 'system')}", flush=True)
+        print(f"[SMOKE-TEST] vlc_plugins={os.environ.get('VLC_PLUGIN_PATH', 'system')}", flush=True)
 
         window.show()
 
@@ -635,10 +694,10 @@ def main(argv=None):
         QTimer.singleShot(500, _finish_smoke_test)
         exit_code = app.exec()
         if exit_code != 0:
-            print(f"[SMOKE-TEST] ERROR: Qt event loop exited with {exit_code}", file=sys.stderr)
+            print(f"[SMOKE-TEST] ERROR: Qt event loop exited with {exit_code}", file=sys.stderr, flush=True)
             return exit_code
 
-        print("[SMOKE-TEST] OK")
+        print("[SMOKE-TEST] OK", flush=True)
         return 0
 
     if args.input_file:

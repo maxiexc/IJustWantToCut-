@@ -8,7 +8,11 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
 ### Added
+- 內建 VLC 預覽播放器，支援毫秒級起訖點標記（Mark In / Mark Out）與 0.05x–5.0x 無段變速剪輯。
+- 支援匯出 H.265 (MP4)（可設定目標解析度、幀率上限、CRF 畫質、強制 8-bit 色彩與去除音軌）及全域調色盤最佳化 GIF 動圖，並提供即時進度條與停止匯出功能。
 - 支援 Windows 64-bit 單檔安裝程式（Inno Setup）與免安裝可攜包（Portable Zip），內嵌 FFmpeg 與 libVLC。
 - 支援 Ubuntu 22.04 ~ 26.04 `.deb` 安裝包、應用程式圖示與桌面選單整合。
 - 導入 CI / CD 分離流程：PR 自動執行靜態與設定檢查，下 `v*` Tag 自動觸發雙平台打包、驗證與 GitHub Release 發佈。

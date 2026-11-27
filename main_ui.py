@@ -118,6 +118,38 @@ MP4_BTN_STYLE = "background-color: #2980b9; color: white; font-weight: bold;"
 GIF_BTN_STYLE = "background-color: #8e44ad; color: white; font-weight: bold;"
 STOP_BTN_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
 
+SUPPORTED_VIDEO_EXTENSIONS = ("mp4", "mov", "avi", "mkv")
+
+
+def _build_file_filter(label, extensions, include_all_files=True):
+    """建立跨平台檔案對話框篩選條件（含大小寫副檔名與所有檔案切換選項）。"""
+    patterns = []
+    for ext in extensions:
+        clean = ext.lstrip(".")
+        lower = f"*.{clean.lower()}"
+        upper = f"*.{clean.upper()}"
+        patterns.append(lower)
+        if upper != lower:
+            patterns.append(upper)
+    primary = f"{label} ({' '.join(patterns)})"
+    if include_all_files:
+        return f"{primary};;所有檔案 (*)"
+    return primary
+
+
+def _ensure_output_extension(file_path, expected_ext):
+    """若輸出路徑未包含預期副檔名，則自動補齊（避免 Linux 或切換所有檔案時缺少副檔名）。"""
+    if not file_path:
+        return file_path
+    if not file_path.lower().endswith(expected_ext.lower()):
+        return f"{file_path}{expected_ext}"
+    return file_path
+
+
+VIDEO_OPEN_FILTER = _build_file_filter("影片檔案", SUPPORTED_VIDEO_EXTENSIONS)
+MP4_SAVE_FILTER = _build_file_filter("MP4 影片檔", ("mp4",))
+GIF_SAVE_FILTER = _build_file_filter("GIF 動圖", ("gif",))
+
 
 class FastCutEditor(QMainWindow):
     def __init__(self):
@@ -332,7 +364,7 @@ class FastCutEditor(QMainWindow):
     # ---------- 播放與操作邏輯 ----------
     def load_video(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "選擇影片素材", "", "Video Files (*.mp4 *.mov *.avi *.mkv)"
+            self, "選擇影片素材", "", VIDEO_OPEN_FILTER
         )
         if file_path:
             self.load_video_file(file_path)
@@ -433,6 +465,24 @@ class FastCutEditor(QMainWindow):
         self.target_duration_sec = (end_sec - start_sec) / speed
         return start_sec, end_sec, speed
 
+    def _select_save_path(self, title, default_name, file_filter, expected_ext):
+        raw_path, _ = QFileDialog.getSaveFileName(self, title, default_name, file_filter)
+        if not raw_path:
+            return None
+
+        output_file = _ensure_output_extension(raw_path, expected_ext)
+        if output_file != raw_path and os.path.exists(output_file):
+            reply = QMessageBox.question(
+                self,
+                "覆蓋現有檔案",
+                f"檔案已存在：\n{output_file}\n\n是否要覆蓋？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return None
+        return output_file
+
     def start_export_mp4(self):
         # 【新增】若正在執行 MP4 匯出，再點一次即為「停止匯出」
         if self.is_exporting:
@@ -444,7 +494,7 @@ class FastCutEditor(QMainWindow):
         if start_sec is None:
             return
 
-        output_file, _ = QFileDialog.getSaveFileName(self, "匯出 MP4", "output.mp4", "MP4 影片檔 (*.mp4)")
+        output_file = self._select_save_path("匯出 MP4", "output.mp4", MP4_SAVE_FILTER, ".mp4")
         if not output_file:
             return
 
@@ -485,7 +535,7 @@ class FastCutEditor(QMainWindow):
         if start_sec is None:
             return
 
-        output_file, _ = QFileDialog.getSaveFileName(self, "匯出 GIF", "output.gif", "GIF 動圖 (*.gif)")
+        output_file = self._select_save_path("匯出 GIF", "output.gif", GIF_SAVE_FILTER, ".gif")
         if not output_file:
             return
 

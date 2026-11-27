@@ -1,22 +1,14 @@
-name: Build, Verify, and Release (Ubuntu & Windows)
+name: Release CD (Build, Verify & Publish)
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
-      - master
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional package version override (e.g. 0.1.0)"
-        required: false
-        default: ""
+        description: "Package version to build (e.g. 0.1.0; builds & verifies artifacts only, does not publish Release)"
+        required: true
         type: string
 
 concurrency:
@@ -33,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Resolve package version
+      - name: Resolve and validate release version
         id: meta
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -43,11 +35,20 @@ jobs:
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME#v}"
           else
-            BASE_VER="$(python3 -c 'import version; print(version.APP_VERSION)')"
-            VER="${BASE_VER}+git${GITHUB_RUN_NUMBER}"
+            echo "ERROR: Release CD requires a v* Git tag or explicit version input." >&2
+            exit 1
           fi
+
+          if ! [[ "${VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "ERROR: Invalid SemVer version '${VER}' (expected e.g. 0.1.0 or 0.1.0-rc.1)." >&2
+            exit 1
+          fi
+
           echo "Resolved APP_VERSION=${VER}"
           echo "version=${VER}" >> "${GITHUB_OUTPUT}"
+
+          python3 packaging/extract_changelog.py --validate
+          python3 packaging/extract_changelog.py --version "${VER}" > /dev/null
 
   build-ubuntu-deb:
     name: Build Ubuntu .deb (22.04 Base)
@@ -89,7 +90,9 @@ jobs:
 
   verify-ubuntu-deb:
     name: Verify Ubuntu .deb (${{ matrix.ubuntu }})
-    needs: build-ubuntu-deb
+    needs:
+      - resolve-version
+      - build-ubuntu-deb
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -109,6 +112,7 @@ jobs:
         run: |
           chmod +x packaging/ubuntu/verify_deb.sh
           docker run --rm \
+            -e EXPECTED_VERSION="${{ needs.resolve-version.outputs.version }}" \
             -v "${PWD}/dist:/pkg:ro" \
             -v "${PWD}/packaging/ubuntu/verify_deb.sh:/verify.sh:ro" \
             "ubuntu:${{ matrix.ubuntu }}" \
@@ -168,7 +172,9 @@ jobs:
 
   verify-windows:
     name: Verify Windows Installer & Portable Zip
-    needs: build-windows
+    needs:
+      - resolve-version
+      - build-windows
     runs-on: windows-2025
     steps:
       - name: Checkout verification script
@@ -183,7 +189,7 @@ jobs:
       - name: Verify Portable Zip and Inno Setup install/uninstall
         shell: pwsh
         run: |
-          .\packaging\windows\verify_windows.ps1 -DistDir dist
+          .\packaging\windows\verify_windows.ps1 -DistDir dist -ExpectedVersion "${{ needs.resolve-version.outputs.version }}"
 
   release:
     name: Publish GitHub Release
@@ -198,6 +204,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: Download Ubuntu .deb artifact
         uses: actions/download-artifact@v8
         with:
@@ -210,31 +219,44 @@ jobs:
           name: ijustwanttocut-windows
           path: dist
 
+      - name: Compose GitHub Release notes from CHANGELOG.md
+        env:
+          VER: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          python3 packaging/extract_changelog.py --version "${VER}" --output release_changelog.md
+          {
+            printf '## IJustWantToCut v%s\n\n' "${VER}"
+            printf '### 更新內容 (Changelog)\n\n'
+            cat release_changelog.md
+            printf '\n'
+            cat <<EOF
+          ### Windows 安裝方式（Windows 10 / 11, 64-bit）
+
+          - **安裝版（推薦）**：下載並執行 \`IJustWantToCut-${VER}-win64-setup.exe\`（已內嵌 FFmpeg 與 libVLC，不需額外安裝依賴）。
+          - **免安裝可攜版**：下載 \`IJustWantToCut-${VER}-win64-portable.zip\`，解壓縮後執行 \`IJustWantToCut\\IJustWantToCut.exe\`。
+
+          ### Ubuntu 安裝方式（22.04 LTS / 24.04 LTS / 26.04 LTS, amd64）
+
+          \`\`\`bash
+          sudo apt update
+          sudo apt install ./ijustwanttocut_${VER}_amd64.deb
+          \`\`\`
+
+          安裝完成後可從應用程式選單啟動 **IJustWantToCut**，或在終端機執行：
+
+          \`\`\`bash
+          ijustwanttocut
+          \`\`\`
+          EOF
+          } > release_notes.md
+          cat release_notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          body_path: release_notes.md
           files: |
             dist/*.deb
             dist/*.exe
             dist/*.zip
             dist/*.sha256
-          body: |
-            ## IJustWantToCut ${{ needs.resolve-version.outputs.version }}
-
-            ### Windows Installation (Windows 10 / 11, 64-bit)
-
-            - **Installer (Recommended)**: Download and run `IJustWantToCut-${{ needs.resolve-version.outputs.version }}-win64-setup.exe` (includes bundled FFmpeg & libVLC, no extra setup required).
-            - **Portable**: Download `IJustWantToCut-${{ needs.resolve-version.outputs.version }}-win64-portable.zip`, extract, and run `IJustWantToCut\IJustWantToCut.exe`.
-
-            ### Ubuntu Installation (22.04 LTS / 24.04 LTS / 26.04 LTS, amd64)
-
-            ```bash
-            sudo apt update
-            sudo apt install ./ijustwanttocut_${{ needs.resolve-version.outputs.version }}_amd64.deb
-            ```
-
-            Launch from the desktop application menu (**IJustWantToCut**) or via terminal:
-
-            ```bash
-            ijustwanttocut
-            ```

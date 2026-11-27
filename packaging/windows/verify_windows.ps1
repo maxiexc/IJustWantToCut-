@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$DistDir = ""
+    [string]$DistDir = "",
+    [string]$ExpectedVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,7 +69,8 @@ function Invoke-GuiProcess {
 function Assert-AppBundleWorks {
     param(
         [string]$AppDir,
-        [string]$Label
+        [string]$Label,
+        [string]$VersionToMatch
     )
 
     $exePath = Join-Path $AppDir "IJustWantToCut.exe"
@@ -84,9 +86,11 @@ function Assert-AppBundleWorks {
 
     Write-Host "==> [$Label] Checking --version..."
     $verRes = Invoke-GuiProcess -ExePath $exePath -Arguments @("--version")
-    Write-Host $verRes.StdOut.Trim()
-    if ($verRes.ExitCode -ne 0 -or $verRes.StdOut.Trim() -notmatch "^IJustWantToCut\s+") {
-        throw "[$Label] --version failed (exit=$($verRes.ExitCode)): stdout='$($verRes.StdOut)' stderr='$($verRes.StdErr)'"
+    $actualVerOut = $verRes.StdOut.Trim()
+    $expectedVerOut = "IJustWantToCut $VersionToMatch"
+    Write-Host $actualVerOut
+    if ($verRes.ExitCode -ne 0 -or $actualVerOut -ne $expectedVerOut) {
+        throw "[$Label] --version mismatch (exit=$($verRes.ExitCode)): expected '$expectedVerOut', got stdout='$actualVerOut' stderr='$($verRes.StdErr)'"
     }
 
     Write-Host "==> [$Label] Checking bundled FFmpeg libx265 encoder..."
@@ -134,6 +138,21 @@ if (-not $setupExe) {
 }
 Assert-Sha256 -FilePath $setupExe.FullName
 
+if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+    if ($portableZip.Name -match "^IJustWantToCut-(.+)-win64-portable\.zip$") {
+        $ExpectedVersion = $Matches[1]
+    } else {
+        throw "Unable to infer ExpectedVersion from $($portableZip.Name)"
+    }
+}
+$ExpectedVersion = $ExpectedVersion.Trim() -replace "^v", ""
+Write-Host "==> Expected application version: $ExpectedVersion"
+
+$expectedSetupName = "IJustWantToCut-${ExpectedVersion}-win64-setup.exe"
+if ($setupExe.Name -ne $expectedSetupName) {
+    throw "Installer filename mismatch: expected '$expectedSetupName', found '$($setupExe.Name)'"
+}
+
 $TestBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
 $PortableExtractDir = Join-Path $TestBase "IJustWantToCut Portable Test"
 $InstallTestDir = Join-Path $TestBase "IJustWantToCut Install Test"
@@ -147,7 +166,7 @@ try {
     Expand-Archive -LiteralPath $portableZip.FullName -DestinationPath $PortableExtractDir -Force
 
     $portableAppDir = Join-Path $PortableExtractDir "IJustWantToCut"
-    Assert-AppBundleWorks -AppDir $portableAppDir -Label "Portable Zip"
+    Assert-AppBundleWorks -AppDir $portableAppDir -Label "Portable Zip" -VersionToMatch $ExpectedVersion
 } finally {
     if (Test-Path -LiteralPath $PortableExtractDir) {
         Remove-Item -LiteralPath $PortableExtractDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -173,7 +192,7 @@ try {
         throw "Silent install failed with exit code $($installProc.ExitCode)"
     }
 
-    Assert-AppBundleWorks -AppDir $InstallTestDir -Label "Inno Setup Installed"
+    Assert-AppBundleWorks -AppDir $InstallTestDir -Label "Inno Setup Installed" -VersionToMatch $ExpectedVersion
 
     $uninstaller = Join-Path $InstallTestDir "unins000.exe"
     if (-not (Test-Path -LiteralPath $uninstaller)) {

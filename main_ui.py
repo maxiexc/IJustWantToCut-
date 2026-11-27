@@ -122,7 +122,7 @@ STOP_BTN_STYLE = "background-color: #c0392b; color: white; font-weight: bold;"
 class FastCutEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} - 剪輯變速工具")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} - 剪輯變速工具")
         self.setGeometry(100, 100, 1050, 650)
 
         self.processor = MediaProcessor()
@@ -383,7 +383,8 @@ class FastCutEditor(QMainWindow):
     def update_ui_time(self):
         if self.current_media_info and self.media_player.is_playing():
             current_ms = self.media_player.get_time()
-            if current_ms < 0: return
+            if current_ms < 0:
+                return
             if not self.slider_progress.isSliderDown():
                 self.slider_progress.blockSignals(True)
                 self.slider_progress.setValue(current_ms)
@@ -423,7 +424,8 @@ class FastCutEditor(QMainWindow):
 
     # ---------- 匯出處理 ----------
     def pre_export_setup(self):
-        if not self.input_file: return None, None, None
+        if not self.input_file:
+            return None, None, None
         self.media_player.pause()
         start_sec = self.mark_in_ms / 1000.0
         end_sec = self.mark_out_ms / 1000.0

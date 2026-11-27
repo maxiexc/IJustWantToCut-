@@ -44,12 +44,22 @@ ijustwanttocut
 
 ### 從原始碼打包（Windows / Ubuntu / GitHub Actions CI/CD）
 
-#### 方式一：GitHub Actions 跨平台自動建置與發佈（推薦）
-整合式跨平台 Workflow 位於 `.github/workflows/release.yml`：
-- 推送至 `main` / `master`、建立 Pull Request 或手動觸發 `workflow_dispatch` 時，會同步執行：
-  1. **Ubuntu `.deb`**：於 Ubuntu 22.04 容器編譯，並在 Ubuntu `22.04` / `24.04` / `26.04` 容器驗證安裝、`ldd` 連結與 `xvfb-run` GUI 啟動測試。
-  2. **Windows 安裝程式 & 可攜包**：於 `windows-2025`（Python 3.11 + PyInstaller + Inno Setup 6）打包內嵌 FFmpeg 與 libVLC 的 `setup.exe` 與 `portable.zip`，並自動實測可攜版啟動、靜默安裝、安裝後啟動與靜默解除安裝。
-- 推送 `v*` 標籤（例如 `git tag v0.1.0 && git push origin v0.1.0`）且雙平台驗證全數通過後，自動建立單一 GitHub Release 並附上所有平台產物與 `.sha256` 校驗檔。
+#### 方式一：GitHub Actions CI / CD 自動檢查與發佈（推薦）
+專案將日常檢查（CI）與版本打包發佈（CD）拆分為兩支 Workflow：
+- **CI（`.github/workflows/ci.yml`）**：在開啟 Pull Request 或推送至 `main` / `master` 時執行，進行 Python 語法與 `ruff` 檢查、打包設定／腳本／`CHANGELOG.md` 格式驗證，以及未來存在 `tests/` 時自動執行 `pytest`（不執行耗時打包）。
+- **Release CD（`.github/workflows/release.yml`）**：**僅在推送 `v*` 版本標籤**（或手動 `workflow_dispatch`）時執行：
+  1. 以 Git Tag 作為唯一版本來源，於建置期自動注入執行檔版本號（同步反映於視窗標題、`--version` 與安裝包屬性）。
+  2. 並行建置並驗證 **Ubuntu `.deb`（22.04 / 24.04 / 26.04 容器實測）** 與 **Windows `setup.exe` + `portable.zip`（含靜默安裝／反安裝實測）**。
+  3. 驗證全數通過後，自動從 [CHANGELOG.md](CHANGELOG.md) 擷取該版本更新日誌並建立單一 GitHub Release。
+
+**標準發版步驟（含 Changelog 維護）：**
+1. 開發過程中將變更記錄於 [CHANGELOG.md](CHANGELOG.md) 的 `## [Unreleased]` 區段。
+2. 準備發版（例如 `v0.1.0`）時，在 `CHANGELOG.md` 新增 `## [0.1.0] - YYYY-MM-DD` 區段並將條目移入，提交並合併至 `main`。
+3. 推送版本標籤即可自動完成雙平台打包與發佈：
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
 
 #### 方式二：於本機建置 Windows 發行檔
 需準備 **Python 3.10 或 3.11 (64-bit)** 與 **Inno Setup 6**：

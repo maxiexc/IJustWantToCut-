@@ -70,13 +70,23 @@ if (Test-Path -LiteralPath $BundleDir) {
 }
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
-Write-Host "==> Running PyInstaller..."
-& $PythonExe -m PyInstaller --noconfirm --clean `
-    --workpath $BuildWorkDir `
-    --distpath $DistDir `
-    $SpecFile
-if ($LASTEXITCODE -ne 0) {
-    throw "PyInstaller failed with exit code $LASTEXITCODE"
+$BuildMetaFile = Join-Path $RepoRoot "_build_meta.py"
+try {
+    & $PythonExe -c "import sys, pathlib; pathlib.Path(sys.argv[1]).write_text('BUILD_VERSION = ' + repr(sys.argv[2]) + '\n', encoding='utf-8')" $BuildMetaFile $Version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to generate _build_meta.py"
+    }
+
+    Write-Host "==> Running PyInstaller..."
+    & $PythonExe -m PyInstaller --noconfirm --clean `
+        --workpath $BuildWorkDir `
+        --distpath $DistDir `
+        $SpecFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Remove-Item -LiteralPath $BuildMetaFile -Force -ErrorAction SilentlyContinue
 }
 
 # 3. Copy FFmpeg, VLC, and Licenses into onedir bundle

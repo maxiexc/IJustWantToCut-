@@ -26,22 +26,30 @@ echo "==> Verifying package: $DEB_PATH"
 . /etc/os-release
 echo "==> Target OS: ${PRETTY_NAME:-unknown}"
 
+PKG_VERSION="$(dpkg-deb -f "$DEB_PATH" Version)"
+echo "==> Package Version metadata: $PKG_VERSION"
+if [ -n "${EXPECTED_VERSION:-}" ]; then
+    EXP_CLEAN="${EXPECTED_VERSION#v}"
+    if [ "$PKG_VERSION" != "$EXP_CLEAN" ]; then
+        echo "ERROR: .deb version ($PKG_VERSION) does not match EXPECTED_VERSION ($EXP_CLEAN)" >&2
+        exit 1
+    fi
+fi
+
 apt-get update
 apt-get install -y --no-install-recommends "$DEB_PATH" xvfb xauth
 
 echo "==> Checking CLI --version..."
 VER_OUT_LOWER="$(ijustwanttocut --version)"
 VER_OUT_UPPER="$(IJustWantToCut --version)"
+EXPECTED_CLI="IJustWantToCut ${PKG_VERSION}"
 echo "ijustwanttocut --version => $VER_OUT_LOWER"
 echo "IJustWantToCut --version => $VER_OUT_UPPER"
 
-case "$VER_OUT_LOWER" in
-    IJustWantToCut\ *) ;;
-    *)
-        echo "ERROR: Unexpected --version output: $VER_OUT_LOWER" >&2
-        exit 1
-        ;;
-esac
+if [ "$VER_OUT_LOWER" != "$EXPECTED_CLI" ]; then
+    echo "ERROR: Unexpected --version output: expected '$EXPECTED_CLI', got '$VER_OUT_LOWER'" >&2
+    exit 1
+fi
 
 if [ "$VER_OUT_LOWER" != "$VER_OUT_UPPER" ]; then
     echo "ERROR: Version mismatch between ijustwanttocut and IJustWantToCut" >&2

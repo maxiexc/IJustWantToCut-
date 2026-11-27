@@ -97,6 +97,7 @@ a = Analysis(
         "vlc",
         "media_processor",
         "version",
+        "_build_meta",
     ],
     hookspath=[],
     hooksconfig={},

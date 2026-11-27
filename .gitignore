@@ -24,6 +24,7 @@ ffprobe
 Thumbs.db
 
 # 打包與建置產物
+_build_meta.py
 build/
 dist/
 Dependencies.zip

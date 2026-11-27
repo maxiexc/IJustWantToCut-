@@ -20,11 +20,21 @@ if command -v dpkg >/dev/null 2>&1; then
 fi
 
 echo "==> Building IJustWantToCut (${APP_VERSION}) with PyInstaller..."
+BUILD_META_FILE="$REPO_ROOT/_build_meta.py"
+cleanup_build_meta() {
+    rm -f "$BUILD_META_FILE"
+}
+trap cleanup_build_meta EXIT
+
+python3 -c 'import sys, pathlib; pathlib.Path(sys.argv[1]).write_text("BUILD_VERSION = " + repr(sys.argv[2]) + "\n", encoding="utf-8")' "$BUILD_META_FILE" "$APP_VERSION"
+
 rm -rf build/pyinstaller dist/IJustWantToCut build/deb_root
 pyinstaller --noconfirm --clean \
     --workpath build/pyinstaller \
     --distpath dist \
     packaging/ubuntu/IJustWantToCut.spec
+
+rm -f "$BUILD_META_FILE"
 
 BUNDLE_DIR="$REPO_ROOT/dist/IJustWantToCut"
 BIN_PATH="$BUNDLE_DIR/IJustWantToCut"
